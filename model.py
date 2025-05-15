@@ -16,54 +16,77 @@ class SpatialAttention(nn.Module):
         return x * attention_map
 
 class CNNWithAttention(nn.Module):
-    def __init__(self, num_classes=6):
+    def __init__(self, num_classes=6, dropout_rate=0.5):
         super(CNNWithAttention, self).__init__()
         
-        # CNN layers
+        # CNN layers with L2 regularization
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
+        self.bn1 = nn.BatchNorm2d(32, momentum=0.1, eps=1e-5)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
+        self.bn2 = nn.BatchNorm2d(64, momentum=0.1, eps=1e-5)
         self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
+        self.bn3 = nn.BatchNorm2d(128, momentum=0.1, eps=1e-5)
         
         self.attention = SpatialAttention()
         self.pool = nn.MaxPool2d(2, 2)
         
+        # Dropout layers with different rates
+        self.dropout1 = nn.Dropout(dropout_rate * 0.5)  # Lighter dropout early
+        self.dropout2 = nn.Dropout(dropout_rate * 0.7)  # Medium dropout
+        self.dropout3 = nn.Dropout(dropout_rate)        # Full dropout late
+        
         # Fully connected layers
         self.fc1 = None
+        self.bn_fc1 = None  # Batch norm for FC1
         self.fc2 = nn.Linear(512, num_classes)
-        self.dropout = nn.Dropout(0.5)
         self.is_first_forward = True
 
     def _initialize_fc1(self, x):
         with torch.no_grad():
-            x = self.pool(F.relu(self.bn1(self.conv1(x))))
-            x = self.attention(x)
-            x = self.pool(F.relu(self.bn2(self.conv2(x))))
-            x = self.attention(x)
-            x = self.pool(F.relu(self.bn3(self.conv3(x))))
-            x = self.attention(x)
+            x = self.forward_features(x)
             flattened_size = x.view(x.size(0), -1).shape[1]
             self.fc1 = nn.Linear(flattened_size, 512).to(x.device)
+            self.bn_fc1 = nn.BatchNorm1d(512, momentum=0.1, eps=1e-5).to(x.device)
+
+    def forward_features(self, x):
+        # First block
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.pool(x)
+        x = self.attention(x)
+        x = self.dropout1(x)
+        
+        # Second block
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = F.relu(x)
+        x = self.pool(x)
+        x = self.attention(x)
+        x = self.dropout2(x)
+        
+        # Third block
+        x = self.conv3(x)
+        x = self.bn3(x)
+        x = F.relu(x)
+        x = self.pool(x)
+        x = self.attention(x)
+        x = self.dropout3(x)
+        
+        return x
 
     def forward(self, x):
         if self.is_first_forward:
             self._initialize_fc1(x)
             self.is_first_forward = False
         
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))
-        x = self.attention(x)
-        
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))
-        x = self.attention(x)
-        
-        x = self.pool(F.relu(self.bn3(self.conv3(x))))
-        x = self.attention(x)
-        
+        x = self.forward_features(x)
         x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
+        
+        x = self.fc1(x)
+        x = self.bn_fc1(x)
+        x = F.relu(x)
+        x = self.dropout3(x)
         x = self.fc2(x)
         
         return x

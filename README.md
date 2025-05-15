@@ -74,19 +74,62 @@ if __name__ == '__main__':
 
 ## Dosya Yapısı
 
+### Kod Dosyaları
 - `model.py`: CNN ve Attention mimarisi
 - `dataloader.py`: Veri yükleme ve ön işleme
 - `train.py`: Eğitim döngüsü ve değerlendirme
 - `requirements.txt`: Gerekli Python paketleri
 
-## Sonuçlar
+### Çıktı Klasör Yapısı
+```
+output/
+└── run_YYYYMMDD_HHMMSS_[dev/full]/  # Her çalıştırma için benzersiz klasör
+    ├── models/                       # Eğitilmiş model dosyaları
+    │   └── model_[dev/full].pth     # Model durumu ve parametreleri
+    ├── plots/                       # Görselleştirmeler
+    │   ├── loss_plot.png           # Eğitim ve validasyon loss grafikleri
+    │   ├── accuracy_plot.png       # Test accuracy grafiği
+    │   └── metrics.csv             # Detaylı metrikler
+    └── logs/                       # Eğitim logları
+        └── training_log.txt        # Her epoch için detaylı bilgiler
+```
 
-Eğitim sonuçları:
-- Loss ve accuracy grafikleri `training_results.png` dosyasına kaydedilir
-- Eğitilmiş model `har_cnn_attention_model.pth` (tam eğitim) veya `har_cnn_attention_model_dev.pth` (geliştirme modu) olarak kaydedilir
+## Eğitim Çıktıları
+
+Her eğitim çalışması (run) için aşağıdaki çıktılar üretilir:
+
+1. **Model Dosyası** (`models/model_[dev/full].pth`):
+   - Model durumu
+   - Optimizer durumu
+   - Son epoch bilgileri
+   - Train/val loss ve accuracy değerleri
+
+2. **Grafikler** (`plots/`):
+   - Training ve validation loss karşılaştırması
+   - Test accuracy değişimi
+   - CSV formatında detaylı metrikler
+
+3. **Loglar** (`logs/training_log.txt`):
+   - Her epoch için detaylı bilgiler
+   - Overfitting/underfitting durumu
+   - Learning rate değişimleri
+   - Dropout ayarlamaları
 
 ## Geliştirme Notları
 
 - Geliştirme modunda veri setinin %10'u kullanılır
 - Epoch sayısı geliştirme modunda 10, tam eğitimde 50'dir
-- Model performansı ve eğitim süreci matplotlib grafikleri ile görselleştirilir 
+- Early stopping, learning rate scheduling ve dropout ayarlama mekanizmaları içerir
+- Her çalıştırma için benzersiz bir output klasörü oluşturulur
+- Training ve validation loss karşılaştırması ile overfitting durumu gözlemlenebilir
+
+## Overfitting ve Underfitting Kontrolü
+
+Model, eğitim sırasında aşağıdaki mekanizmalarla overfitting ve underfitting'i kontrol eder:
+
+1. **Early Stopping**: Validation loss belirli bir süre iyileşmezse eğitimi durdurur
+2. **Learning Rate Ayarlama**: Öğrenme yavaşladığında learning rate'i düşürür
+3. **Dropout Ayarlama**: 
+   - Overfitting durumunda dropout oranını artırır
+   - Underfitting durumunda dropout oranını azaltır
+4. **Model Kaydetme**: En iyi performans gösteren model durumunu kaydeder 

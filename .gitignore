@@ -41,10 +41,10 @@ venv.bak/
 
 # Project specific
 UCI HAR Dataset/
-*.pth
-training_results.png
-logs/
-checkpoints/
+output/*/models/*.pth
+output/*/plots/*.png
+output/*/plots/*.csv
+output/*/logs/*.txt
 *.log
 
 # OS specific
