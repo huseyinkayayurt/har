@@ -9,7 +9,7 @@ from datetime import datetime
 from model import create_model, CNNWithAttention, TSTransformerEncoder, FocalLoss
 from dataloader import create_dataloaders
 
-def setup_output_dir(dev_mode=True):
+def setup_output_dir(dev_mode=True, is_comparison=False, comparison_dir=None):
     """Çıktı klasörlerini oluştur"""
     # Ana output klasörü
     output_dir = "output"
@@ -19,7 +19,14 @@ def setup_output_dir(dev_mode=True):
     # Timestamp ile benzersiz run klasörü
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     mode = "dev" if dev_mode else "full"
-    run_dir = os.path.join(output_dir, f"run_{timestamp}_{mode}")
+    
+    if is_comparison and comparison_dir:
+        # Karşılaştırma modunda, verilen comparison_dir altında run klasörü oluştur
+        run_dir = os.path.join(comparison_dir, mode, f"run_{timestamp}")
+    else:
+        # Normal modda, output altında run klasörü oluştur
+        run_dir = os.path.join(output_dir, f"run_{timestamp}_{mode}")
+    
     os.makedirs(run_dir)
     
     # Alt klasörler
@@ -36,7 +43,8 @@ def setup_output_dir(dev_mode=True):
 class TrainingMonitor:
     def __init__(self, model, optimizer, log_dir, patience=3, early_stop_patience=3,
                  min_delta=0.001, lr_patience=3, lr_factor=0.5, min_lr=1e-6,
-                 dropout_inc_threshold=2.0, dropout_dec_threshold=0.5):
+                 dropout_inc_threshold=2.0, dropout_dec_threshold=0.5,
+                 smoothing_window=3):
         """
         Args:
             model: Model instance
@@ -50,6 +58,7 @@ class TrainingMonitor:
             min_lr: Minimum learning rate
             dropout_inc_threshold: Dropout artırma eşiği (train/val loss oranı)
             dropout_dec_threshold: Dropout azaltma eşiği (train/val loss oranı)
+            smoothing_window: Validation loss smoothing için pencere boyutu
         """
         self.model = model
         self.optimizer = optimizer
@@ -82,6 +91,10 @@ class TrainingMonitor:
         self.best_loss = None
         self.early_stop = False
         self.best_model = None
+        
+        # Smoothing için
+        self.smoothing_window = smoothing_window
+        self.val_loss_window = []
         
         # Log dosyasını başlat
         with open(self.log_file, 'w') as f:
@@ -147,27 +160,58 @@ class TrainingMonitor:
             
         self.lr_counter = 0
         
+    def _smooth_val_loss(self, val_loss):
+        """Validation loss'u yumuşat"""
+        self.val_loss_window.append(val_loss)
+        if len(self.val_loss_window) > self.smoothing_window:
+            self.val_loss_window.pop(0)
+        return sum(self.val_loss_window) / len(self.val_loss_window)
+    
+    def _check_improvement(self, current_loss):
+        """Loss'ta gerçek bir iyileşme var mı kontrol et"""
+        if self.best_loss is None:
+            return True
+        
+        # Minimum değişim miktarından daha fazla iyileşme var mı?
+        improvement = self.best_loss - current_loss
+        return improvement > self.min_delta
+    
+    def _check_trend(self):
+        """Son birkaç epoch'taki trend'i kontrol et"""
+        if len(self.val_loss_window) < self.smoothing_window:
+            return True  # Yeterli veri yoksa trend'i görmezden gel
+        
+        # Son birkaç epoch'taki değişimi hesapla
+        recent_losses = self.val_loss_window[-self.smoothing_window:]
+        trend = sum(recent_losses[i] - recent_losses[i-1] for i in range(1, len(recent_losses)))
+        
+        # Trend pozitifse (loss artıyorsa) veya çok küçük değişim varsa
+        return trend < self.min_delta
+    
     def __call__(self, epoch, train_loss, val_loss, accuracy):
         """Her epoch sonunda çağrılacak ana fonksiyon"""
         self.train_losses.append(train_loss)
         self.val_losses.append(val_loss)
         self.test_accuracies.append(accuracy)
         
+        # Validation loss'u yumuşat
+        smoothed_val_loss = self._smooth_val_loss(val_loss)
+        
         # Early stopping kontrolü
-        if self.best_loss is None or val_loss < self.best_loss - self.min_delta:
-            self.best_loss = val_loss
+        if self._check_improvement(smoothed_val_loss):
+            self.best_loss = smoothed_val_loss
             self.best_model = self.model.state_dict().copy()
             self.counter = 0
         else:
             self.counter += 1
             if self.counter >= self.early_stop_patience * 0.5 and self.counter < self.early_stop_patience:
                 remaining = self.early_stop_patience - self.counter
-                print(f"WARNING: Validation loss did not improve for {self.counter} epochs. "
-                      f"Early stopping in {remaining} more epochs if no improvement.")
+                print(f"UYARI: Validation loss {self.smoothing_window} epoch'luk ortalamada iyileşmedi. "
+                      f"Early stopping {remaining} epoch sonra tetiklenecek.")
         
         # Learning rate ayarlama kontrolü
-        if val_loss < self.best_lr_loss - self.min_delta:
-            self.best_lr_loss = val_loss
+        if smoothed_val_loss < self.best_lr_loss - self.min_delta:
+            self.best_lr_loss = smoothed_val_loss
             self.lr_counter = 0
         else:
             self.lr_counter += 1
@@ -176,10 +220,10 @@ class TrainingMonitor:
             self._adjust_learning_rate()
         
         # Overfitting/Underfitting kontrolü
-        status = self.check_overfitting(train_loss, val_loss)
+        status = self.check_overfitting(train_loss, smoothed_val_loss)
         
-        # Early stopping kontrolü
-        if self.counter >= self.early_stop_patience:
+        # Early stopping kontrolü - trend analizi ile birlikte
+        if self.counter >= self.early_stop_patience and not self._check_trend():
             self.early_stop = True
             return True
             
@@ -188,7 +232,7 @@ class TrainingMonitor:
         print(f"Status: {status.upper()}, Current LR: {current_lr:.6f}")
         
         # Log metrics
-        self.log_metrics(epoch, train_loss, val_loss, accuracy, status, current_lr)
+        self.log_metrics(epoch, train_loss, smoothed_val_loss, accuracy, status, current_lr)
         
         return False
 
@@ -350,13 +394,14 @@ def train_model(model, train_loader, test_loader, criterion, optimizer,
                 inputs, labels = inputs.to(device), labels.to(device)
                 
                 if is_transformer:
-                    # For transformer, we need to get just the class outputs
-                    outputs, _ = model(inputs, return_projection=True)
+                    # For transformer, we need to get both outputs and projections
+                    logits, projections = model(inputs, return_projection=True)
+                    val_loss = criterion((logits, projections), labels)
+                    outputs = logits  # For accuracy calculation, use the class logits
                 else:
+                    # For other models
                     outputs = model(inputs)
-                
-                # Calculate validation loss
-                val_loss = criterion(outputs if not is_transformer else (outputs, _), labels)
+                    val_loss = criterion(outputs, labels)
                 
                 # NaN kontrolü
                 if torch.isnan(val_loss) or torch.isinf(val_loss):
@@ -425,13 +470,15 @@ def train_model(model, train_loader, test_loader, criterion, optimizer,
     
     return monitor.train_losses, monitor.val_losses, monitor.test_accuracies, model
 
-def main(dev_mode=True, method="cnn_attention"):
+def main(dev_mode=True, method="cnn_attention", is_comparison=False, comparison_dir=None):
     """
     Ana eğitim fonksiyonu
     
     Args:
         dev_mode (bool): Geliştirme modu için True, tam eğitim için False
-        method (str): 'cnn_attention', 'transformer_contrastive', veya 'multi_branch_cnn'
+        method (str): 'cnn_attention', 'transformer_contrastive', 'multi_branch_cnn', veya 'cnn_lstm'
+        is_comparison (bool): Karşılaştırma modunda mı çalışıyor
+        comparison_dir (str): Karşılaştırma klasörü yolu
     """
     # Yöntem adını insan okunabilir formata çevir
     if method == "cnn_attention":
@@ -443,8 +490,11 @@ def main(dev_mode=True, method="cnn_attention"):
     elif method == "multi_branch_cnn":
         method_name = "Multi-Branch CNN"
         loss_name = "CE Loss"
+    elif method == "cnn_lstm":
+        method_name = "CNN+LSTM"
+        loss_name = "CE Loss"
     else:
-        raise ValueError(f"Unknown method: {method}. Use 'cnn_attention', 'transformer_contrastive', or 'multi_branch_cnn'")
+        raise ValueError(f"Unknown method: {method}. Use 'cnn_attention', 'transformer_contrastive', 'multi_branch_cnn', or 'cnn_lstm'")
     
     print(f"Starting training with {method_name} method ({loss_name})...")
     
@@ -453,7 +503,11 @@ def main(dev_mode=True, method="cnn_attention"):
     print(f"Using device: {device}")
     
     # Output klasörlerini oluştur
-    run_dir, models_dir, plots_dir, logs_dir = setup_output_dir(dev_mode)
+    run_dir, models_dir, plots_dir, logs_dir = setup_output_dir(
+        dev_mode=dev_mode,
+        is_comparison=is_comparison,
+        comparison_dir=comparison_dir
+    )
     print(f"Outputs will be saved to: {run_dir}")
     
     # Create data loaders
@@ -493,6 +547,24 @@ def main(dev_mode=True, method="cnn_attention"):
         )
     elif method == "multi_branch_cnn":
         # Multi-Branch CNN için özel ayarlar
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=0.001,
+            weight_decay=0.01,
+            betas=(0.9, 0.999),
+            eps=1e-8
+        )
+        
+        # Learning rate scheduler
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.2,
+            patience=4,
+            min_lr=1e-7
+        )
+    elif method == "cnn_lstm":
+        # CNN+LSTM için özel ayarlar
         optimizer = optim.AdamW(
             model.parameters(),
             lr=0.001,

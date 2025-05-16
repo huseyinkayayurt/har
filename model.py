@@ -545,23 +545,35 @@ def create_model(method, num_classes=6):
         
         # Custom criterion that combines both losses with weighting
         def combined_criterion(outputs, targets):
-            logits, projections = outputs  # Unpack outputs
-            
-            # Güvenli loss hesaplama - NaN kontrolü
-            try:
-                contrastive_loss = supervised_contrastive(projections, targets)
-                # NaN kontrolü
-                if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
-                    print("WARNING: Contrastive loss is NaN/Inf! Using only classification loss.")
-                    contrastive_loss = torch.tensor(0.0, device=logits.device)
-            except Exception as e:
-                print(f"Error in contrastive loss: {e}")
-                contrastive_loss = torch.tensor(0.0, device=logits.device)
+            # Handle different input cases - outputs can be single tensor or tuple
+            if isinstance(outputs, tuple):
+                logits, projections = outputs  # Unpack outputs from tuple
+            else:
+                # This is not expected, but handle gracefully to prevent crashes
+                print("WARNING: Expected tuple output but got tensor. Using only classification loss.")
+                logits = outputs
+                projections = None
                 
+            # Always compute classification loss
             classification_loss = classification(logits, targets)
             
-            # Toplam loss hesaplanırken güvenli ağırlıklandırma
-            return classification_loss + contrastive_weight * contrastive_loss
+            # Only compute contrastive loss if projections are available
+            if projections is not None:
+                try:
+                    contrastive_loss = supervised_contrastive(projections, targets)
+                    # NaN kontrolü
+                    if torch.isnan(contrastive_loss) or torch.isinf(contrastive_loss):
+                        print("WARNING: Contrastive loss is NaN/Inf! Using only classification loss.")
+                        contrastive_loss = torch.tensor(0.0, device=logits.device)
+                except Exception as e:
+                    print(f"Error in contrastive loss: {e}")
+                    contrastive_loss = torch.tensor(0.0, device=logits.device)
+                    
+                # Toplam loss hesaplanırken güvenli ağırlıklandırma
+                return classification_loss + contrastive_weight * contrastive_loss
+            else:
+                # No projections, just return classification loss
+                return classification_loss
         
         return model, combined_criterion
     
