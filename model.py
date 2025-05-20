@@ -402,73 +402,35 @@ class CNNLSTM(nn.Module):
     - 9 channels: sensor data
     - 128: time steps
     """
-    def __init__(self, num_classes=6, input_channels=9, seq_length=128, dropout_rate=0.5):
+    def __init__(self, num_classes=6):
         super(CNNLSTM, self).__init__()
         
-        # CNN parameters
-        self.input_channels = input_channels
-        self.seq_length = seq_length
-        
-        # CNN feature extraction layers
-        self.conv1 = nn.Conv1d(input_channels, 64, kernel_size=5, stride=1, padding=2)
+        # CNN katmanları
+        self.conv1 = nn.Conv1d(in_channels=9, out_channels=64, kernel_size=5)
         self.bn1 = nn.BatchNorm1d(64)
-        self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2)  # Output: (B, 64, 64)
-        self.dropout1 = nn.Dropout(dropout_rate * 0.5)
+        self.pool1 = nn.MaxPool1d(kernel_size=2)
+        self.dropout1 = nn.Dropout(0.3)
         
-        self.conv2 = nn.Conv1d(64, 128, kernel_size=5, stride=1, padding=2)
+        self.conv2 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=5)
         self.bn2 = nn.BatchNorm1d(128)
-        self.pool2 = nn.MaxPool1d(kernel_size=2, stride=2)  # Output: (B, 128, 32)
-        self.dropout2 = nn.Dropout(dropout_rate * 0.7)
+        self.pool2 = nn.MaxPool1d(kernel_size=2)
+        self.dropout2 = nn.Dropout(0.3)
         
-        self.conv3 = nn.Conv1d(128, 256, kernel_size=3, stride=1, padding=1)
-        self.bn3 = nn.BatchNorm1d(256)
-        self.pool3 = nn.MaxPool1d(kernel_size=2, stride=2)  # Output: (B, 256, 16)
-        self.dropout3 = nn.Dropout(dropout_rate)
-        
-        # Calculate CNN output size
-        # Original: 128 -> After 3 pooling layers: 128/(2^3) = 16
-        cnn_output_size = seq_length // 8
-        
-        # LSTM parameters
-        self.lstm_hidden_size = 128
-        self.lstm_num_layers = 2
-        
-        # LSTM layer for temporal processing
+        # LSTM katmanları
         self.lstm = nn.LSTM(
-            input_size=256,  # CNN output channels
-            hidden_size=self.lstm_hidden_size,
-            num_layers=self.lstm_num_layers,
+            input_size=128,  # CNN'den gelen özellik sayısı
+            hidden_size=128,
+            num_layers=2,
             batch_first=True,
-            dropout=dropout_rate if self.lstm_num_layers > 1 else 0,
+            dropout=0.3,
             bidirectional=True
         )
         
-        # Fully connected layers for classification
-        lstm_output_size = self.lstm_hidden_size * 2  # Bidirectional
-        self.fc1 = nn.Linear(lstm_output_size, 512)
-        self.bn_fc1 = nn.BatchNorm1d(512)
-        self.dropout_fc = nn.Dropout(dropout_rate)
-        self.fc2 = nn.Linear(512, num_classes)
+        # Çıkış katmanı
+        self.fc = nn.Linear(256, num_classes)  # 256 = 128 * 2 (bidirectional)
         
-        # Initialize weights
-        self._init_weights()
-        
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv1d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.xavier_normal_(m.weight)
-                nn.init.constant_(m.bias, 0)
-    
     def forward(self, x):
-        # x shape: (batch_size, 9, 128)
-        
-        # CNN Feature Extraction
-        # Process with CNN layers: (B, C, T) format
+        # CNN katmanları
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.relu(x)
@@ -481,30 +443,18 @@ class CNNLSTM(nn.Module):
         x = self.pool2(x)
         x = self.dropout2(x)
         
-        x = self.conv3(x)
-        x = self.bn3(x)
-        x = F.relu(x)
-        x = self.pool3(x)
-        x = self.dropout3(x)
-        
-        # Reshape for LSTM: (B, C, T) -> (B, T, C)
+        # LSTM için boyutları düzenle
+        # (batch_size, channels, sequence_length) -> (batch_size, sequence_length, channels)
         x = x.permute(0, 2, 1)
         
-        # LSTM Sequence Processing
-        output, (h_n, c_n) = self.lstm(x)
+        # LSTM katmanı
+        x, _ = self.lstm(x)
         
-        # Use the last hidden state from final layer of both directions for classification
-        # Shape: (num_layers * 2, batch_size, hidden_size) -> (batch_size, hidden_size * 2)
-        h_n = h_n.view(self.lstm_num_layers, 2, -1, self.lstm_hidden_size)
-        h_n = h_n[-1]  # Take the last layer
-        h_n = h_n.transpose(0, 1).contiguous().view(-1, self.lstm_hidden_size * 2)
+        # Son zaman adımındaki çıktıyı al
+        x = x[:, -1, :]
         
-        # Fully connected layers for classification
-        x = self.fc1(h_n)
-        x = self.bn_fc1(x)
-        x = F.relu(x)
-        x = self.dropout_fc(x)
-        x = self.fc2(x)
+        # Çıkış katmanı
+        x = self.fc(x)
         
         return x
 
@@ -583,7 +533,7 @@ def create_model(method, num_classes=6):
         return model, criterion
     
     elif method == "cnn_lstm":
-        model = CNNLSTM(num_classes=num_classes, input_channels=9, seq_length=128, dropout_rate=0.5)
+        model = CNNLSTM(num_classes=num_classes)
         criterion = nn.CrossEntropyLoss()
         return model, criterion
     

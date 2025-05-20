@@ -11,32 +11,28 @@ from dataloader import create_dataloaders
 
 def setup_output_dir(dev_mode=True, is_comparison=False, comparison_dir=None):
     """Çıktı klasörlerini oluştur"""
-    # Ana output klasörü
-    output_dir = "output"
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # Timestamp ile benzersiz run klasörü
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    mode = "dev" if dev_mode else "full"
-    
     if is_comparison and comparison_dir:
-        # Karşılaştırma modunda, verilen comparison_dir altında run klasörü oluştur
-        run_dir = os.path.join(comparison_dir, mode, f"run_{timestamp}")
+        # Karşılaştırma modunda, verilen comparison_dir'i kullan
+        run_dir = comparison_dir
     else:
         # Normal modda, output altında run klasörü oluştur
+        output_dir = "output"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        # Timestamp ile benzersiz run klasörü
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        mode = "dev" if dev_mode else "full"
         run_dir = os.path.join(output_dir, f"run_{timestamp}_{mode}")
-    
-    os.makedirs(run_dir)
     
     # Alt klasörler
     models_dir = os.path.join(run_dir, "models")
     plots_dir = os.path.join(run_dir, "plots")
     logs_dir = os.path.join(run_dir, "logs")
     
-    os.makedirs(models_dir)
-    os.makedirs(plots_dir)
-    os.makedirs(logs_dir)
+    os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(plots_dir, exist_ok=True)
+    os.makedirs(logs_dir, exist_ok=True)
     
     return run_dir, models_dir, plots_dir, logs_dir
 
@@ -355,7 +351,11 @@ def train_model(model, train_loader, test_loader, criterion, optimizer,
             if is_transformer:
                 # For transformer with contrastive loss
                 outputs = model(inputs, return_projection=True)
-                loss = criterion(outputs, labels)
+                if isinstance(outputs, tuple):
+                    logits, projections = outputs
+                    loss = criterion((logits, projections), labels)
+                else:
+                    loss = criterion(outputs, labels)
             else:
                 # For CNN with attention
                 outputs = model(inputs)
@@ -395,9 +395,13 @@ def train_model(model, train_loader, test_loader, criterion, optimizer,
                 
                 if is_transformer:
                     # For transformer, we need to get both outputs and projections
-                    logits, projections = model(inputs, return_projection=True)
-                    val_loss = criterion((logits, projections), labels)
-                    outputs = logits  # For accuracy calculation, use the class logits
+                    outputs = model(inputs, return_projection=True)
+                    if isinstance(outputs, tuple):
+                        logits, projections = outputs
+                        val_loss = criterion((logits, projections), labels)
+                        outputs = logits  # For accuracy calculation, use the class logits
+                    else:
+                        val_loss = criterion(outputs, labels)
                 else:
                     # For other models
                     outputs = model(inputs)
@@ -406,7 +410,6 @@ def train_model(model, train_loader, test_loader, criterion, optimizer,
                 # NaN kontrolü
                 if torch.isnan(val_loss) or torch.isinf(val_loss):
                     print(f"WARNING: Validation loss is {val_loss.item()}, using previous value")
-                    # Bir önceki batch'in değerini kullanmak için val_loss'u değiştirme
                     continue
                     
                 running_val_loss += val_loss.item()

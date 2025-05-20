@@ -4,69 +4,65 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import os
 
+def load_data(data_path, split):
+    """
+    UCI HAR Dataset'ini yükle
+    
+    Args:
+        data_path (str): Veri setinin yolu
+        split (str): 'train' veya 'test'
+    
+    Returns:
+        X (numpy.ndarray): Özellikler
+        y (numpy.ndarray): Etiketler
+    """
+    # Veri dosyalarının yolları
+    X_data_path = os.path.join(data_path, split, f'X_{split}.txt')
+    y_data_path = os.path.join(data_path, split, f'y_{split}.txt')
+    
+    # Özellikleri ve etiketleri yükle
+    X = np.loadtxt(X_data_path)
+    y = np.loadtxt(y_data_path).astype(int) - 1  # 1-6'dan 0-5'e dönüştür
+    
+    return X, y
+
+def reshape_data(X, method):
+    """
+    Veriyi model için uygun boyutlara dönüştür
+    
+    Args:
+        X (numpy.ndarray): Özellikler
+        method (str): Kullanılan model yöntemi
+    
+    Returns:
+        X (numpy.ndarray): Dönüştürülmüş özellikler
+    """
+    # Her örnek 561 özelliğe sahip
+    # Bu özellikler 9 sensörden geliyor
+    # Her sensör için 561/9 = 62 zaman adımı var
+    
+    if method == "transformer_contrastive":
+        # (batch_size, 33, 17)
+        return X.reshape(X.shape[0], 33, 17)
+    elif method in ["multi_branch_cnn", "cnn_lstm"]:
+        # (batch_size, 9, 128)
+        # Eğer 561 < 9*128 ise, kalan kısmı sıfırla doldur
+        X_new = np.zeros((X.shape[0], 9*128))
+        X_new[:, :561] = X
+        return X_new.reshape(X.shape[0], 9, 128)
+    else:
+        # (batch_size, 1, 33, 17)
+        return X.reshape(X.shape[0], 1, 33, 17)
+
 class HARDataset(Dataset):
-    def __init__(self, data_path, split='train', dev_mode=False, method='cnn_attention'):
+    def __init__(self, features, labels):
         """
         Args:
-            data_path (str): Path to UCI HAR Dataset
-            split (str): 'train' or 'test'
-            dev_mode (bool): If True, use only a small portion of data for development
-            method (str): 'cnn_attention', 'transformer_contrastive', or 'multi_branch_cnn'
+            features (numpy.ndarray): Özellikler
+            labels (numpy.ndarray): Etiketler
         """
-        self.data_path = data_path
-        self.split = split
-        self.method = method
-        
-        # Load data
-        X_data_path = os.path.join(data_path, split, 'X_' + split + '.txt')
-        y_data_path = os.path.join(data_path, split, 'y_' + split + '.txt')
-        
-        # Load features and labels
-        self.features = np.loadtxt(X_data_path)
-        self.labels = np.loadtxt(y_data_path).astype(int) - 1  # Convert 1-6 to 0-5
-        
-        if dev_mode:
-            # Use only 5% of the data in dev mode
-            dev_size = len(self.features) // 20
-            self.features = self.features[:dev_size]
-            self.labels = self.labels[:dev_size]
-        
-        # Process features based on method
-        if method in ['cnn_attention', 'transformer_contrastive']:
-            # Reshape features to (N, 1, 33, 17) for CNN
-            # Original shape is (N, 561), we'll reshape it to be compatible with our CNN
-            N = self.features.shape[0]
-            # 561 = 33 * 17
-            self.features = self.features.reshape(N, 1, 33, 17)
-        
-        elif method == 'multi_branch_cnn':
-            # For multi-branch CNN, reshape to (N, 9, 128)
-            # This is a simplification - in a real scenario, you would extract acc and gyro data
-            # Reshaped features: First 6 channels (0-5) for acc+gyro, last 3 (6-8) for total_acc
-            N = self.features.shape[0]
-            # Simulating 9-channel data with 128 time steps from 561 features
-            transformed_features = np.zeros((N, 9, 128))
-            
-            # Fill the simulated data (just for demonstration)
-            # In real implementation, you would properly extract these values from raw signals
-            for i in range(N):
-                # Reshape the 561 features into a format suitable for multi-branch CNN
-                feature = self.features[i]
-                
-                # Reshape to 9 channels
-                # First 6 channels: acc_xyz (3) + gyro_xyz (3)
-                # Last 3 channels: total_acc_xyz (3)
-                for c in range(9):
-                    # Extract approximately 128 values for each channel
-                    # This is just a mock implementation - adjust for your actual data
-                    start_idx = c * (561 // 9)
-                    end_idx = min(start_idx + 128, 561)
-                    
-                    # Pad with zeros if needed
-                    actual_length = end_idx - start_idx
-                    transformed_features[i, c, :actual_length] = feature[start_idx:end_idx]
-            
-            self.features = transformed_features
+        self.features = features
+        self.labels = labels
         
         # Normalize features
         self.features = (self.features - np.mean(self.features)) / (np.std(self.features) + 1e-8)
@@ -79,47 +75,37 @@ class HARDataset(Dataset):
         label = torch.LongTensor([self.labels[idx]])[0]
         return feature, label
 
-def create_dataloaders(data_path, batch_size=32, num_workers=4, dev_mode=False, method='cnn_attention'):
+def create_dataloaders(data_path, batch_size=64, dev_mode=True, method=None):
     """
-    Create train and test dataloaders for UCI HAR Dataset
+    Veri yükleyicileri oluştur
     
     Args:
-        data_path (str): Path to UCI HAR Dataset
-        batch_size (int): Batch size for training
-        num_workers (int): Number of workers for data loading
-        dev_mode (bool): If True, use only a small portion of data for development
-        method (str): 'cnn_attention', 'transformer_contrastive', or 'multi_branch_cnn'
-    
-    Returns:
-        train_loader, test_loader (DataLoader): PyTorch dataloaders
+        data_path (str): Veri setinin yolu
+        batch_size (int): Batch boyutu
+        dev_mode (bool): Geliştirme modu için True, tam eğitim için False
+        method (str): Kullanılan model yöntemi ('cnn_attention', 'transformer_contrastive', 'multi_branch_cnn', 'cnn_lstm')
     """
-    # Create datasets
-    train_dataset = HARDataset(data_path, split='train', dev_mode=dev_mode, method=method)
-    test_dataset = HARDataset(data_path, split='test', dev_mode=dev_mode, method=method)
+    # Her model için veriyi yeniden yükle ve dönüştür
+    X_train, y_train = load_data(data_path, 'train')
+    X_test, y_test = load_data(data_path, 'test')
     
-    print(f"Dataset sizes (dev_mode={dev_mode}, method={method}):")
-    print(f"Train samples: {len(train_dataset)}")
-    print(f"Test samples: {len(test_dataset)}")
-    print(f"Feature shape: {train_dataset[0][0].shape}")
+    # Geliştirme modunda veri setini küçült
+    if dev_mode:
+        X_train = X_train[:1000]
+        y_train = y_train[:1000]
+        X_test = X_test[:200]
+        y_test = y_test[:200]
     
-    # MPS (Apple Silicon) device check
-    use_pin_memory = torch.backends.cuda.is_built() and torch.cuda.is_available()
+    # Veriyi model için uygun boyutlara dönüştür
+    X_train = reshape_data(X_train, method)
+    X_test = reshape_data(X_test, method)
     
-    # Create dataloaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=use_pin_memory
-    )
+    # Veri setlerini oluştur
+    train_dataset = HARDataset(X_train, y_train)
+    test_dataset = HARDataset(X_test, y_test)
     
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=use_pin_memory
-    )
+    # DataLoader'ları oluştur
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     return train_loader, test_loader 
